@@ -1,4 +1,3 @@
-
 import streamlit as st
 import time
 import pandas as pd
@@ -175,6 +174,114 @@ class SQLServerConnector(DatabaseConnector):
         """
         self.execute_query(sp_query)
 
+class DB2Connector(DatabaseConnector):
+    def connect(self, server, database, username, password):
+        import ibm_db
+        conn_str = f"SERVER={server};DATABASE={database};UID={username};PWD={password}"
+        self.connection = ibm_db.connect(database,username,password)
+
+    def create_tables(self):
+        queries=[
+            """CREATE TABLE Clientes (
+                cliente_id INT PRIMARY KEY,
+                nombre VARCHAR(100),
+                email VARCHAR(100),
+                telefono VARCHAR(20),
+                direccion VARCHAR(200))""",
+            """CREATE TABLE Personal (
+                personal_id INT PRIMARY KEY,
+                nombre VARCHAR(100),
+                rol VARCHAR(50))""",
+            """CREATE TABLE Producto (
+                producto_id INT PRIMARY KEY,
+                nombre VARCHAR(100),
+                precio DECIMAL(10,2),
+                stock INT)""",
+            """CREATE TABLE Factura (
+                factura_id INT PRIMARY KEY,
+                cliente_id INT FOREIGN KEY REFERENCES Clientes(cliente_id),
+                personal_id INT FOREIGN KEY REFERENCES Personal(personal_id),
+                fecha DATETIME,
+                total DECIMAL(10,2))""",
+            """CREATE TABLE Detalle_Factura (
+                detalle_id INT PRIMARY KEY,
+                factura_id INT FOREIGN KEY REFERENCES Factura(factura_id),
+                producto_id INT FOREIGN KEY REFERENCES Producto(producto_id),
+                cantidad INT,
+                precio_unitario DECIMAL(10,2),
+                subtotal DECIMAL(10,2))"""
+        ]
+        for query in queries:
+            self.execute_query(query)
+    
+    def create_stored_procedures(self):
+        sp_query = """
+            CREATE PROCEDURE sp_generar_factura
+            @cliente_id INT,
+            @personal_id INT,
+            @productos_json NVARCHAR(MAX)
+        AS
+        BEGIN
+            BEGIN TRANSACTION;
+            
+            DECLARE @factura_id INT;
+            DECLARE @total DECIMAL(10,2) = 0;
+            
+            -- Obtener el próximo ID de factura
+            SELECT @factura_id = ISNULL(MAX(factura_id), 0) + 1 FROM Factura;
+            
+            -- Insertar la factura
+            INSERT INTO Factura (factura_id, cliente_id, personal_id, fecha, total)
+            VALUES (@factura_id, @cliente_id, @personal_id, GETDATE(), 0);
+            
+            -- Procesar los productos
+            DECLARE @productos TABLE (
+                producto_id INT,
+                cantidad INT,
+                precio_unitario DECIMAL(10,2)
+            );
+            
+            INSERT INTO @productos
+            SELECT 
+                producto_id, 
+                cantidad,
+                (SELECT precio FROM Producto WHERE producto_id = j.producto_id) as precio_unitario
+            FROM OPENJSON(@productos_json)
+            WITH (
+                producto_id INT '$.producto_id',
+                cantidad INT '$.cantidad'
+            ) j;
+            
+            -- Insertar detalles y calcular total
+            INSERT INTO Detalle_Factura (detalle_id, factura_id, producto_id, cantidad, precio_unitario, subtotal)
+            SELECT 
+                ROW_NUMBER() OVER (ORDER BY producto_id) + ISNULL((SELECT MAX(detalle_id) FROM Detalle_Factura), 0),
+                @factura_id,
+                producto_id,
+                cantidad,
+                precio_unitario,
+                cantidad * precio_unitario
+            FROM @productos;
+            
+            -- Actualizar stock y calcular total
+            UPDATE p
+            SET p.stock = p.stock - pr.cantidad
+            FROM Producto p
+            JOIN @productos pr ON p.producto_id = pr.producto_id;
+            
+            SELECT @total = SUM(cantidad * precio_unitario) FROM @productos;
+            
+            -- Actualizar total de factura
+            UPDATE Factura SET total = @total WHERE factura_id = @factura_id;
+            
+            COMMIT TRANSACTION;
+            
+            SELECT @factura_id as factura_id, @total as total;
+        END
+        """
+        self.execute_query(sp_query)
+
+
 # Clases similares para Oracle, DB2, PostgreSQL, MySQL, Cassandra, MongoDB
 # (Implementaciones omitidas por brevedad, pero seguirían el mismo patrón)
 
@@ -196,7 +303,7 @@ def main():
     databases = {
         "SQLServer": SQLServerConnector("SQLServer"),
         "Oracle": None,  # Se implementaría similar a SQLServer
-        "DB2": None,
+        "DB2": DB2Connector("DB2"),
         "PostgreSQL": None,
         "MySQL": None,
         "Cassandra": None,
