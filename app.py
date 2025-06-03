@@ -1788,20 +1788,47 @@ def main():
             st.subheader("Gráficos Comparativos")
             
             # Gráfico de barras por operación
-            fig, ax = plt.subplots(figsize=(12, 6))
+            fig, ax = plt.subplots(figsize=(12, 7)) # Ajusta el tamaño si es necesario
             try:
-                # Usar pivot_table en lugar de pivot
-                # np.mean tomará el promedio si hay múltiples mediciones para la misma operación y BD
                 pivot_df = df.pivot_table(index='database', columns='operation', values='time_ms', aggfunc=np.mean)
-                pivot_df.plot(kind='bar', ax=ax)
+                pivot_df.plot(kind='bar', ax=ax) # Esto dibuja las barras
+
                 ax.set_title("Tiempo de Ejecución Promedio por Operación y Base de Datos")
-                ax.set_ylabel("Tiempo Promedio (ms)")
                 ax.set_xlabel("Base de Datos")
-                plt.xticks(rotation=45, ha="right") # Mejorar legibilidad de etiquetas en eje X
-                plt.tight_layout() # Ajustar layout
+
+                if st.checkbox("Usar escala logarítmica para el eje Y", value=True): # Permite al usuario elegir
+                    ax.set_yscale('log')
+                    ax.set_ylabel("Tiempo Promedio (ms) - Escala Logarítmica")
+                    # Formateador para el eje Y en escala logarítmica (evita notación científica si es posible)
+                    from matplotlib.ticker import ScalarFormatter
+                    ax.yaxis.set_major_formatter(ScalarFormatter())
+                    # Opcional: para forzar que no use notación científica con números no tan grandes
+                    # ax.yaxis.get_major_formatter().set_scientific(False)
+                    # ax.yaxis.get_major_formatter().set_useOffset(False)
+                else:
+                    ax.set_ylabel("Tiempo Promedio (ms) - Escala Lineal")
+
+                # --- AÑADIR VALORES ENCIMA DE LAS BARRAS ---
+                for container in ax.containers:
+                    # fmt='%.1f' formatea el número a 1 decimal. Puedes cambiarlo (ej. '%.0f' para enteros)
+                    # fontsize controla el tamaño de la fuente de la etiqueta
+                    # padding es el espacio entre la barra y la etiqueta
+                    ax.bar_label(container, fmt='%.1f', fontsize=8, padding=3, rotation=0)
+                    # Si las etiquetas se superponen mucho, podrías considerar rotarlas:
+                    # ax.bar_label(container, fmt='%.1f', fontsize=7, padding=3, rotation=90)
+
+                plt.xticks(rotation=45, ha="right") # Rotar etiquetas del eje X para mejor legibilidad
+                plt.tight_layout() # Ajustar el layout para que todo encaje bien
                 st.pyplot(fig)
+
+            except ValueError as ve:
+                if "Index contains duplicate entries" in str(ve):
+                    st.error("Error al generar el gráfico: Parece que hay datos duplicados para la misma base de datos y operación. "
+                            "Intenta limpiar los resultados anteriores si ejecutaste las pruebas múltiples veces sin que se promediaran.")
+                else:
+                    st.error(f"Error de valor al generar el gráfico de barras: {ve}")
             except Exception as e:
-                st.error(f"Error al generar el gráfico de barras: {e}")
+                st.error(f"Error inesperado al generar el gráfico de barras: {e}")
                 st.caption("Esto puede ocurrir si no hay suficientes datos o si hay problemas con los nombres de las operaciones/DBs.")
 
 
