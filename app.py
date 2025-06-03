@@ -3,6 +3,7 @@ import time
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
+from pymongo import MongoClient
 from cassandra.cluster import Cluster
 from cassandra.query import SimpleStatement
 from cassandra import ConsistencyLevel
@@ -12,6 +13,7 @@ import random
 from datetime import datetime
 import sys
 import os
+
 
 # Configuración de la página
 st.set_page_config(page_title="Comparación de Bases de Datos", layout="wide")
@@ -435,7 +437,7 @@ class MySQLConnector(DatabaseConnector):
             st.error(f"Error en MySQL sales_report (placeholder): {e}")
             return None   
 
-
+##################################################
 class CassandraConnector(DatabaseConnector):
     def connect(self, contact_points=['127.0.0.1'], keyspace=None):
         try:
@@ -768,11 +770,238 @@ class CassandraConnector(DatabaseConnector):
         except Exception as e:
             print(f"Error en CassandraConnector.sales_report: {str(e)}")
             return None, 0 
+      
+#Implentacion con oracle
+
+class OracleConnector(DatabaseConnector):
+    def connect(self, dsn, user, password):
+        self.connection = cx_Oracle.connect(user=user, password=password, dsn=dsn)
+        self.cursor = self.connection.cursor()
+    
+    def create_tables(self):
+        table_queries = [
+            """CREATE TABLE Clientes (
+                cliente_id NUMBER PRIMARY KEY,
+                nombre VARCHAR2(100),
+                email VARCHAR2(100),
+                telefono VARCHAR2(20),
+                direccion VARCHAR2(200)
+            )""",
+            """CREATE TABLE Personal (
+                personal_id NUMBER PRIMARY KEY,
+                nombre VARCHAR2(100),
+                rol VARCHAR2(50)
+            )""",
+            """CREATE TABLE Producto (
+                producto_id NUMBER PRIMARY KEY,
+                nombre VARCHAR2(100),
+                precio NUMBER(10,2),
+                stock NUMBER
+            )""",
+            """CREATE TABLE Factura (
+                factura_id NUMBER PRIMARY KEY,
+                cliente_id NUMBER,
+                personal_id NUMBER,
+                fecha DATE,
+                total NUMBER(10,2),
+                FOREIGN KEY (cliente_id) REFERENCES Clientes(cliente_id),
+                FOREIGN KEY (personal_id) REFERENCES Personal(personal_id)
+            )""",
+            """CREATE TABLE Detalle_Factura (
+                detalle_id NUMBER PRIMARY KEY,
+                factura_id NUMBER,
+                producto_id NUMBER,
+                cantidad NUMBER,
+                precio_unitario NUMBER(10,2),
+                subtotal NUMBER(10,2),
+                FOREIGN KEY (factura_id) REFERENCES Factura(factura_id),
+                FOREIGN KEY (producto_id) REFERENCES Producto(producto_id)
+            )"""
+        ]
+        for query in table_queries:
+            try:
+                self.execute_query(query)
+            except Exception as e:
+                print(f"Error creando tabla en Oracle: {e}")
         
+        self.create_stored_procedures()
+
+    def create_stored_procedures(self):
+        try:
+            drop_proc = "BEGIN EXECUTE IMMEDIATE 'DROP PROCEDURE sp_generar_factura_oracle'; EXCEPTION WHEN OTHERS THEN NULL; END;"
+            self.execute_query(drop_proc)
+        except:
+            pass
+
+        sp_query = """
+        CREATE OR REPLACE PROCEDURE sp_generar_factura_oracle (
+            p_cliente_id IN NUMBER,
+            p_personal_id IN NUMBER,
+            p_factura_id OUT NUMBER,
+            p_total OUT NUMBER
+        ) AS
+            v_factura_id NUMBER;
+            v_total NUMBER := 0;
+        BEGIN
+            SELECT NVL(MAX(factura_id), 0) + 1 INTO v_factura_id FROM Factura;
+            INSERT INTO Factura (factura_id, cliente_id, personal_id, fecha, total)
+            VALUES (v_factura_id, p_cliente_id, p_personal_id, SYSDATE, 0);
+            -- No se maneja JSON aquí. Esto es una versión base. Adaptar para PL/SQL con tipos complejos si se desea.
+            -- Actualizar totales y stock manualmente después.
+            p_factura_id := v_factura_id;
+            p_total := v_total;
+        END;
+        """
+        self.execute_query(sp_query)
+
+    def generate_test_data(self):
+        nombres = ["Carlos", "María", "José", "Ana", "Luis"]
+        apellidos = ["Pérez", "González", "Rodríguez", "López", "Fernández"]
+        roles = ["Vendedor", "Cajero", "Supervisor"]
+        productos = [("Laptop HP", 3200.5), ("Mouse", 75.9)]
+
+        for i in range(1, 11):
+            nombre = f"{random.choice(nombres)} {random.choice(apellidos)}"
+            email = f"{nombre.replace(' ', '.').lower()}{random.randint(1,100)}@example.com"
+            telefono = f"9{random.randint(10000000,99999999)}"
+            self.execute_query("INSERT INTO Clientes (cliente_id, nombre, email, telefono, direccion) VALUES (:1, :2, :3, :4, :5)",
+                               (i, nombre, email, telefono, "Dirección X"))
+        
+        for i in range(1, 6):
+            nombre = f"{random.choice(nombres)} {random.choice(apellidos)}"
+            rol = random.choice(roles)
+            self.execute_query("INSERT INTO Personal (personal_id, nombre, rol) VALUES (:1, :2, :3)", (i, nombre, rol))
+        
+        for i, (producto, precio) in enumerate(productos, 1):
+            self.execute_query("INSERT INTO Producto (producto_id, nombre, precio, stock) VALUES (:1, :2, :3, :4)",
+                               (i, producto, precio, random.randint(10, 50)))
+        
+        self.connection.commit()
+
+    def generate_invoice(self):
+        args = [1, 1, 0, 0.0]
+        self.cursor.callproc("sp_generar_factura_oracle", args)
+        factura_id = args[2]
+        total = args[3]
+        return {"factura_id": factura_id, "total": total}
+
+    def search_client(self):
+        rows, _ = self.select_query("SELECT * FROM Clientes WHERE cliente_id = :1", (1,))
+        return rows
+
+    def search_product(self):
+        rows, _ = self.select_query("SELECT * FROM Producto WHERE producto_id = :1", (1,))
+        return rows
+
+#Conexion Mongodb
+class MongoDBConnector(DatabaseConnector):
+    def connect(self, uri="mongodb://localhost:27017", database="facturacion"):
+        self.client = MongoClient(uri)
+        self.db = self.client[database]
+
+    def disconnect(self):
+        if self.client:
+            self.client.close()
+
+    def create_tables(self):
+        # Mongo crea colecciones automáticamente, pero las limpiamos si ya existen
+        self.db.Clientes.drop()
+        self.db.Personal.drop()
+        self.db.Producto.drop()
+        self.db.Factura.drop()
+        self.db.Detalle_Factura.drop()
+
+    def generate_test_data(self):
+        clientes = []
+        for i in range(1, 11):
+            clientes.append({
+                "_id": i,
+                "nombre": f"Cliente {i}",
+                "email": f"cliente{i}@mail.com",
+                "telefono": f"9{random.randint(10000000,99999999)}",
+                "direccion": "Calle Falsa 123"
+            })
+        self.db.Clientes.insert_many(clientes)
+
+        personal = []
+        for i in range(1, 6):
+            personal.append({
+                "_id": i,
+                "nombre": f"Personal {i}",
+                "rol": random.choice(["Cajero", "Vendedor"])
+            })
+        self.db.Personal.insert_many(personal)
+
+        productos = [
+            {"_id": 1, "nombre": "Laptop", "precio": 3500.0, "stock": 50},
+            {"_id": 2, "nombre": "Mouse", "precio": 75.0, "stock": 200},
+            {"_id": 3, "nombre": "Monitor", "precio": 900.0, "stock": 80}
+        ]
+        self.db.Producto.insert_many(productos)
+
+    def search_client(self):
+        return self.db.Clientes.find_one({"_id": 1})
+
+    def search_product(self):
+        return self.db.Producto.find_one({"_id": 1})
+
+    def generate_invoice(self):
+        cliente_id = 1
+        personal_id = 1
+        productos = [
+            {"producto_id": 1, "cantidad": 1},
+            {"producto_id": 2, "cantidad": 2}
+        ]
+
+        factura_id = str(uuid.uuid4())
+        total = 0
+        detalles = []
+
+        for item in productos:
+            producto = self.db.Producto.find_one({"_id": item["producto_id"]})
+            if producto and producto["stock"] >= item["cantidad"]:
+                subtotal = producto["precio"] * item["cantidad"]
+                total += subtotal
+                detalles.append({
+                    "factura_id": factura_id,
+                    "producto_id": item["producto_id"],
+                    "nombre_producto": producto["nombre"],
+                    "cantidad": item["cantidad"],
+                    "precio_unitario": producto["precio"],
+                    "subtotal": subtotal
+                })
+                # actualizar stock
+                self.db.Producto.update_one(
+                    {"_id": item["producto_id"]},
+                    {"$inc": {"stock": -item["cantidad"]}}
+                )
+
+        self.db.Factura.insert_one({
+            "_id": factura_id,
+            "cliente_id": cliente_id,
+            "personal_id": personal_id,
+            "fecha": datetime.now(),
+            "total": total
+        })
+
+        self.db.Detalle_Factura.insert_many(detalles)
+
+        return {
+            "factura_id": factura_id,
+            "total": total
+        }
 
 
 # Clases similares para Oracle, DB2, PostgreSQL, MySQL, Cassandra, MongoDB
 # (Implementaciones omitidas por brevedad, pero seguirían el mismo patrón)
+
+
+
+
+
+
+
+
 
 # Interfaz de usuario con Streamlit
 def main():
@@ -791,12 +1020,12 @@ def main():
     # Conexiones a bases de datos (simuladas para el ejemplo)
     databases = {
         #"SQLServer": None,
-        #"Oracle": None,  # Se implementaría similar a SQLServer
+        "Oracle":OracleConnector("Oracle") ,  # Se implementaría similar a SQLServer
         #"DB2": DB2Connector("DB2"),
         #"PostgreSQL": None,
         "MySQL": MySQLConnector("MySQL"),
         "Cassandra": CassandraConnector("Cassandra"),
-        #"MongoDB": None
+        "MongoDB": MongoDBConnector("MongoDB")
     }
     
     if choice == "Mantenedores":
@@ -828,7 +1057,7 @@ def main():
         tab_options = ["Clientes", "Personal", "Producto", "Factura", "Detalle Factura"]
         tab_choice = st.selectbox("Seleccione tabla", tab_options)
         
-        
+        ##############################################
         if db_choice_mant == "Cassandra" and tab_choice == "Clientes":
             st.subheader("Mantenedor de Clientes (Cassandra)")
             col1, col2 = st.columns(2)
@@ -1007,6 +1236,7 @@ def main():
                 mostrar_lista_productos_cassandra(selected_db_connector)
                 if st.button("Refrescar Lista Productos", key="refresh_c_prod"):
                     st.rerun()
+            ##################################################3
             
             with col2_prod:
                 st.write("➕ Agregar Producto")
