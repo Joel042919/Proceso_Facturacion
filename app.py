@@ -689,7 +689,7 @@ def main():
                         db.connection.commit()
                         st.success("✅ Factura registrada correctamente.")
                     except Exception as e:
-                        sst.error(f"❌ Error al guardar factura: {str(e)}")
+                        st.error(f"❌ Error al guardar factura: {str(e)}")
         elif tab_choice == "Detalle Factura":
             st.subheader("Mantenedor de Detalles de Factura")
 
